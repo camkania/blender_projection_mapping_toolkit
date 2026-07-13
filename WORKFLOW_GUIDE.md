@@ -171,20 +171,77 @@ surface region; blends are invisible at viewing distance.
 
 ## 6. QC, show control & troubleshooting
 
-**Show-control / sync (critical for rides):**
-- Slave playback to the **timecode / trigger master** — for attractions this is typically **SMPTE
-  timecode or triggers from the ride PLC/show controller**; also common: MTC/LTC, DMX/ArtNet, OSC.
-- **Genlock** all playback (and all render nodes for realtime) to a common sync so multi-output surfaces
-  stay frame-aligned.
-- **24/7 reliability:** solid-state media, redundant/understudy playback, watchdog/auto-restart,
-  scheduled content integrity checks. Record the reliability design in the package.
+### Show-control, timecode & sync (critical for rides)
+
+**Timecode and genlock are two different jobs — you usually need both [17]:**
+- **Timecode** is a positional *address* (`HH:MM:SS:FF`) that names each frame and tells the server *where
+  in the show* to be. On its own it does **not** keep devices frame-aligned; independent clocks drift [16][17].
+- **Genlock / frame-lock** is a timing *reference* that makes every output scan its frames at the same
+  instant — preventing tearing across multi-output surfaces and render nodes [17]. Genlock *phases* frames;
+  timecode *positions* them. Any multi-projector/LED surface or realtime cluster needs **both**.
+
+**Who is master:** in an attraction the **ride PLC / show controller is the timecode master** and the media
+server **chases** it. disguise can chase external **LTC** or **MTC**, and respond to **Art-Net / OSC / MSC /
+MIDI** cues [15]. Compensate FOH/system latency with a global chase **offset** (seconds), and a per-track
+**TC adjust** where needed [15].
+
+**Distribution transports on site — tradeoffs:**
+
+| Transport | Runs over | Pros | Cons / watch-for |
+|---|---|---|---|
+| **LTC** (SMPTE, audio biphase) [16] | an audio channel / XLR | ubiquitous; readable by anything with an audio input; robust; easy to jam-sync/distribute | occupies an audio channel; degrades over long/poor cable; needs clean regeneration |
+| **MTC** (SMPTE over MIDI) [16] | MIDI / USB-MIDI | native to DAWs / QLab show-control | MIDI distance & cabling limits; less common in large rigs |
+| **Art-Net / OSC / MSC cues** [15] | Ethernet | already present in lighting rigs; carries triggers as well as clock | network reliability; Art-Net TC is **not** genlock — still genlock the video |
+
+**Frame rate & drop-frame — lock this before any media is authored [16]:**
+- The **timecode frame rate must match the show/media frame rate**; mixing (e.g., 30 TC against 25 media) drifts.
+- Prefer **non-drop-frame at an integer rate** (24/25/30/50/60) for installations. Reserve **drop-frame**
+  (29.97 DF, written `hh:mm:ss;ff`) for broadcast-derived 29.97 material — DF skips frame *numbers*, not
+  frames, to track wall-clock [16].
+- Record the one chosen standard (rate + NDF/DF) everywhere.
+
+**How timecode should travel *with* the media as it's developed.** Fix the temporal contract at authoring
+time so each clip has a known address the server can place deterministically:
+
+| Method | How it carries TC | Pros | Cons |
+|---|---|---|---|
+| **Embedded TC track** (playout MOV) [18] | QuickTime timecode track — start TC + frame rate + frame count baked into the HAP/NotchLC `.mov` | server reads start TC and self-places on the timeline; travels inside the file | must set the correct **start TC** at export; encoder must write a TC track |
+| **Frame number = TC** (image-sequence masters) | documented **start-frame ↔ start-TC** mapping; frame *N* = start_TC + *N* | transparent, lossless, trivially verifiable | fragile to renumbering; the mapping must be recorded, not implicit |
+| **Manifest sidecar** (spec §6) | `timecode_in/out`, `fps`, `df/ndf` fields per clip | explicit, automatable, import-agnostic | only helps if the importer reads it |
+| **BITC burn-in** (review only) | visible TC window burned into a **review** copy | unambiguous for eyeballing sync in QC | **never** ship to show — it's lit pixels; keep it out of `playout/` |
+
+- **Recommended:** choose **one project frame rate + NDF/DF standard first**; author every clip against a
+  **known start timecode**; **embed a TC track in playout MOVs** (or record the start-frame↔TC mapping for
+  sequences) [18]; and mirror `timecode_in/out` + `fps` + drop-frame in the **manifest** (spec §6) so import
+  is deterministic. Keep a **BITC review copy** separate from the show deliverable, for sync QC only.
+
+**24/7 reliability:** solid-state media, redundant/understudy playback, watchdog/auto-restart, scheduled
+content integrity checks. Record the reliability design in the package.
+
+### Media-over-IP / SMPTE ST 2110 (PTP sync) — forward-looking
+
+Where the section above assumes SDI + genlock + LTC, high-end and broadcast-adjacent rigs are moving to
+**SMPTE ST 2110**, which carries video, audio, and ancillary data as **separate IP essence streams**
+(ST 2110-20 / -30 / -40) over standard networking [19]. Two implications for this pipeline:
+- **Sync:** ST 2110 replaces black-burst/tri-level **genlock** with **PTP (IEEE 1588), distributed via the
+  ST 2059-2 profile** — sub-microsecond timing carried on the same network as the media rather than a
+  separate sync rig [20]. The genlock-vs-timecode logic above still holds; PTP is *how* the frame-lock is
+  delivered.
+- **Redundancy & discovery:** dual-network **ST 2022-7** seamless protection switching and **NMOS** stream
+  discovery are part of a real deployment.
+
+**When it's relevant to you — the trigger is LED / realtime, not projectors.** LED processors (e.g.,
+Megapixel Helios) now accept ST 2110 input, and virtual-production / ICVFX volumes are increasingly
+specified end-to-end 2110 [21][22]; disguise has run full ST 2110 media-server → LED shows at scale [21].
+For a **projector-based scenic show it is not required** — SDI + genlock + LTC remains standard. Treat
+ST 2110 as the IP-native evolution of this sync section, most applicable on the **realtime/LED path (§7)**.
 
 **Pre-show checklist:**
 1. Framerate consistent author→server→output→device; genlock locked.
 2. Color matches approved reference; no view-transform shift; no banding on gradients.
 3. Registration within tolerance on every surface part; blends invisible.
 4. Alpha correct (object-only lighting for scenic; no black-vs-alpha errors on LED).
-5. Timecode/trigger tested end-to-end from the show controller.
+5. Timecode/trigger tested end-to-end from the show controller; TC frame rate matches media rate; chase offset set; each clip's start TC places it correctly.
 6. No dropped/doubled frames over a full loop (1-px pan test).
 7. Redundancy/watchdog verified.
 
@@ -197,6 +254,8 @@ surface region; blends are invisible at viewing distance.
 | Soft / moiré, esp. LED | Non-integer scaling | Author 1:1 to device pixels; codec-legal dims |
 | Stutter / dropped frames | Long-GOP codec, disk bandwidth, no genlock | Use HAP/NotchLC; check IO; enable genlock |
 | Misregistration / drift | Model ≠ as-built; stale calibration | Re-scan/re-survey; recapture calibration data |
+| Show drifts out of sync over runtime | Timecode without genlock; mismatched TC/media frame rate; DF vs NDF mixup | Genlock all outputs [17]; match TC rate to media; lock one NDF/DF standard [16] |
+| Clip starts at the wrong moment | Missing/incorrect start TC; wrong chase offset | Set start TC on export [18]; verify manifest `timecode_in`; adjust offset [15] |
 | Visible blend seams | Overlap brightness/black mismatch | Rebalance soft-edge blend & black level |
 | Banding on facade gradients | 8-bit throughout | 10-bit+ masters; NotchLC playout [6] |
 | Spill / whole area lit on scenic | Missing/incorrect alpha matte | Deliver straight alpha; verify premult flag |
@@ -216,7 +275,8 @@ Realtime swaps the *clip* for a *live engine stream*.
 - **Notch blocks:** `.dfx` blocks run inside disguise/TD for GPU-generative realtime layers (disguise
   offers first-party Notch support via RenderStream [9]) — a lighter path than a full UE cluster.
 - **Sync is non-negotiable:** **genlock/frame-lock across every render node** (e.g., Quadro Sync + house
-  tri-level sync) + timecode; watch the **latency budget** for interactive triggers.
+  tri-level sync) + timecode; watch the **latency budget** for interactive triggers. On IP/LED deployments
+  this frame-lock may instead be delivered via **SMPTE ST 2110 / PTP** rather than tri-level genlock (§6).
 - **Color:** manage in UE via **OCIO using the same pinned ACES config version** [7][8] as the
   pre-rendered pipeline, outputting the same delivery ODT so realtime and playout match (spec §4, §8).
 - **Registration:** UE frustum must reference the **same real-world surface model** used for pre-rendered
@@ -269,3 +329,11 @@ reasoning, not vendor-documented, and are presented as recommendations. Numberin
 12. Blender Manual — *Texture Coordinate node* (Object/World-space outputs; an object/empty can be animated to move a texture through a surface). https://docs.blender.org/manual/en/latest/render/shader_nodes/input/texture_coordinate.html
 13. disguise — *Parallel Mapping* (emits one unified image across multiple screens, treated as a single canvas). https://help.disguise.one/designer/mapping/mapping-types/parallel-mapping
 14. disguise — *Direct Mapping* (content applied across one or multiple screens within one mapping). https://help.disguise.one/designer/mapping/mapping-types/direct-mapping
+15. disguise — *Timecode Overview / Setup LTC / Setup MTC* (chase external LTC or MTC; Art-Net/OSC/MSC/MIDI cues; chase offset and per-track TC adjust). https://help.disguise.one/designer/timeline-tracks-transports/timecode/timecode-overview
+16. *SMPTE timecode* (SMPTE 12M): HH:MM:SS:FF addressing, LTC (audio biphase) vs MTC (MIDI), drop-frame vs non-drop-frame at 29.97. https://en.wikipedia.org/wiki/SMPTE_timecode
+17. Dataton — *Genlock, framelock & timecode sync: when do I need them?* (timecode names frames; genlock phases them; installations need both). https://newsandviews.dataton.com/genlock-framelock-timecode-sync-when-do-i-need-them
+18. Apple — *QuickTime File Format: Timecode media / timed metadata* (timecode track stores start timecode, frame rate, and frame count). https://developer.apple.com/documentation/quicktime-file-format/timed_metadata_media
+19. SMPTE — *ST 2110 standards suite* (professional media over IP; -20 video / -30 audio / -40 ancillary as separate essence streams). https://www.smpte.org/standards/st2110 · FAQ: https://www.smpte.org/smpte-st-2110-faq
+20. SMPTE — *ST 2059-2: SMPTE Profile for Use of IEEE 1588 Precision Time Protocol* (PTP timing/sync for ST 2110; free PDF). https://pub.smpte.org/pub/st2059-2/st2059-2-2021.pdf
+21. disguise — *Six reasons to use ST 2110* / *Full ST 2110 for Eurovision 2024* (media server → LED at scale; ST 2022-7 redundancy). https://www.disguise.one/en/insights/blog/six-reasons-use-st-2110-your-next-live-event-broadcast-or-immersive-experience · https://www.disguise.one/en/insights/news/disguise-enables-first-large-scale-live-broadcast-running-full-st-2110-eurovision
+22. Puget Systems — *SMPTE 2110 and why it matters for ICVFX* (LED processors, e.g. Megapixel Helios, accepting ST 2110). https://www.pugetsystems.com/blog/2026/02/09/smpte-2110-and-why-it-matters-for-icvfx/
